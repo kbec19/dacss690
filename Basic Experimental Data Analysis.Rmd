@@ -1,0 +1,329 @@
+---
+title: "Basic Experimental Data Analysis"
+author: "Dr. C.E. Stapleton"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Analyzing Experimental Data Based on Brader et al 2008 AJPS Article 
+
+```{r setup}
+library(tidyverse)
+library(rdrobust)
+library(foreign)
+library(ggplot2)
+library(mediation)
+library(poliscidata)
+library(skimr)
+library(knitr)
+library( rstatix)
+library(pollster)
+library(kableExtra)
+library(gmodels)
+library(psych)
+library(car)
+library(stargazer)
+library(reshape2)
+library(MASS)
+library(pscl)
+library(broom)
+library(jtools)
+```
+
+Note: Data for this example is built into R 
+
+In this example, we will be analyzing experimental data from a 2008 publication by Brader et al, "What Triggers Public Opposition to Immigration" examining how different primes influence white American's support for immigration. 
+
+This was a 2X2 experimental design where authors created a fake newspaper story that manipulated two factors:
+1. If story was about a Latino or European immigrant - variable 'eth' in data 
+2. If story had a positive or negative tone about immigration - variable 'tone' in data
+
+```{r framing}
+
+#Start by loading the data - note you must have the mediation package installed and loaded for this to run 
+
+view(framing)
+names(framing) #Shows all the variables in the dataset
+?framing #Brings up background information on the study including variable descriptions
+
+```
+
+##Initial Data Work 
+
+First time you get any data, you should always investigate to understand its structure and format. Always think about how your data is formatted - i.e. is it a factor, number, character, etc.? In R, and other statistical software packages, the variable type determines how you can analyze and report that piece of data. 
+
+The below code will help you quickly assess your data structure to understand what variables are numerical, factor, character, etc.
+
+```{r }
+names(framing)
+#Variable Review Code
+skim(framing) #Use this to quickly get unweighted summary values for your numeric variables
+freq(framing$educ) #Use this to get the frequency of values within a variable 
+attributes(framing$educ) #Use this to get the value levels for a variable 
+class(framing$cond) #Use this to see what type of variable you have 
+freq(framing$age)
+summary(framing$age) #Use this for a continuous variable 
+
+
+```
+
+It will routinely be important for you to transform your data to make analysis easier. This can take on many forms. Oftentimes, we will want to transform a factor variable to a number - or vice versa - depending on the type of analysis we want to conduct. We will also want to collapse many groups into fewer or rename certain values within a variable. The below code helps us do this. 
+
+```{r}
+#It can be important to transform your data to make analysis and reporting easier  
+
+framing$edu <- as.numeric(framing$educ) #Creates easier to work with demographic data
+framing$female <- ifelse(framing$gender == "female", 1, 0) #Creates easier to work with demographic data
+framing$tone <-as.factor(framing$tone) #Makes variable a factor for use in a chi-square balance test calculation
+framing$anx <- as.numeric(framing$anx) #Makes variable a number for use in ANOVA, t-test, and regression analyses
+framing$eng <- as.numeric(framing$english) #Makes variable a number for use in ANOVA, t-test, and regression analyses
+framing$treat_a<-as.factor(framing$treat) #Makes variable a factor for use in a chi-square balance test calculation
+framing$weight<-1 #Creates a weight for use in later table creation 
+
+framing <- framing %>% #This creates new variable with treatment conditions named 
+  mutate(cond2 = case_when(
+    cond ==1 ~ "Latino, Negative",
+    cond ==2 ~ "European, Negative",
+    cond ==3 ~ "Latino, Positive",
+    cond ==4 ~ "European, Positive"
+  ))
+
+framing <- framing %>% #This creates new variable with treatment conditions named 
+  mutate(eth2 = case_when(
+    eth ==0 ~ "European",
+    eth ==1 ~ "Latino"
+  ))
+
+framing$eth2 <-as.factor(framing$eth2)
+framing$cond2 <-as.factor(framing$cond2)
+framing$cond2 <- relevel(framing$cond2, ref = 3)  # This line of code changes the reference group for analysis we will conduct shortly 
+
+```
+
+# Descriptive Data
+
+Descriptive data refers to looking at the central tendencies of our numerical data including the data type, specific values a variable can take on, mean and standard deviations. By examining our data in this way, we can understand our data better which helps us design our analyze and reporting needs. 
+
+Note: For this example, we are going to be treating the experimental design as a 1X2 factorial. In essence, we are ignoring one of the treatment conditions for pedagogical reasons alone. You will be analyzing the other randomized treatment condition later. The variable 'eth' is based on the experimental treatment I will analyze here. Half of the sample saw a newspaper story about immigration focusing on a Latino immigrant and the other half saw the same story but with a focus on an European immigrant. 
+
+```{r}
+#Descriptive statistics allow us to understand our data, which informs our analyses and how we display our results
+
+framing %>%  #This code allows you to summarize a subset of your variables 
+  get_summary_stats(     
+    anx, age, income, emo, immigr, p_harm,  # columns to calculate for
+    type = "common")    
+
+freq(framing$eth) #This will be our primary IV in this example analysis 
+
+```
+
+From the 'skim' function, we see multiple important things about our data including which variables are currently treated as a factor - meaning certain analyses will not work with it - and which are treated as numeric - meaning it is treated as a continuous variable by R. Knowing from above that we are analyzing the 'eth' variable as our independent variable, we see that it is currently considered a numeric variable with a mean of .51, a minimum value of 0 and a maximum value of 1. That indicates it is a dichotomous variable that takes on 2, and only 2, values: 0 and 1. Dichotomous variables make our analysis life easier so that is good to see. 
+
+We also see there are 7 variables considered factors while the rest of the variables are considered numeric by R. This will be good information when it comes time to conduct analysis as certain analytic approaches require specific variable formats. 
+
+##Balance Tests
+
+We conduct balance tests to ensure that our randomization worked. Meaning, we want to check that our demographic variables are roughly the same across experimental groups. If they are not, that could indicate something went wrong in our randomization procedure or we had systematic bias in our breakoff rates (i.e. our experimental treatment lead a specific type of person to quit the survey). 
+
+The type of analysis we will conduct is based on the data structure itself. Demographic variables are typically either a factor variable - a categorical variable with no natural order like race/ethnicity or gender identity -, a continuous variable like age or income, or an ordinal variable like education. For the factor and ordinal variables, we will typically use crosstabs with chi-square calculations to test for differences across groups. For continuous variables, we will use ANOVA, t-test and/or linear regression.  
+
+```{r}
+#Balance tests with factor/ordinal variables 
+
+##Approach 1: Tidyverse Version of Crosstab
+framing %>%                  # Tidyverse approach to crosstabs 
+  group_by(educ) %>%                         # group by outcome 
+  count(cond2) %>%                            # group and count by age_cat, and then remove age_cat grouping
+  mutate(percent = scales::percent(n / sum(n))) # calculate percent - note the denominator is by outcome group
+
+chisq.test(table(framing$educ, framing$cond2)) #Calculates chi-square test statistic for unbalance across experimental conditions
+chisq.test(table(framing$edu, framing$cond2)) #Calculates chi-square test statistic for unbalance across experimental conditions
+
+?chisq.test #Command pulls up detailed information about the test procedure and various possible options
+
+#Notice that one of the chi-square tests produces a p-value while the other does not
+#If p-value was not produced, the test did not run properly. Typically occurs because one of 
+#the variables are not the right type. Run the "class" code seen below to see what type each 
+#variable from the chi-square tests are. 
+
+#What's the problematic variable type?
+
+class(framing$edu)
+class(framing$educ)
+class(framing$cond2)
+
+##Approach 2: CrossTable code from 'gmodels' package  
+#Next approach gives you both chi-square tests as well as percentages per cell 
+CrossTable(framing$edu, framing$cond2, expected = FALSE, chisq=TRUE,  prop.c=TRUE, prop.r=FALSE, prop.t=FALSE, prop.chisq = FALSE)
+CrossTable(framing$edu, framing$cond, expected = FALSE, chisq=TRUE,  prop.c=TRUE, prop.r=FALSE, prop.t=FALSE, prop.chisq = FALSE)
+
+
+##Approach 3: crosstable code from 'pollster' package - use for nice looking tables 
+# Can make it a little nicer looking table using the "pollster" package + "knitr" 
+crosstab(df = framing, x = educ, y = cond2, weight = weight, pct_type = "col") %>%
+  kable(digits=0, col.names = c('Education Level', 'European, Negative',	'European, Positive',	'Latino, Negative',	'Latino, Positive'), align=('lcccc'),
+        caption = "Education Levels by Condition", escape=FALSE, position="left") %>%
+  kable_classic(full_width = F, html_font = "Cambria") %>% 
+  footnote(alphabet = ("Numbers Represent % of Column in Cell; chi-sq p-value=.45"))
+          
+
+
+```
+The above code chunk gives you three different ways to conduct a crosstab plus chi-square calculation. This analytic approach is appropriate for ordinal/factor/categorical variable types 
+
+
+```{r}
+#Balance tests with continuous variable 
+
+#Approach 1: Get mean value by experimental group 
+framing %>%
+  group_by(eth) %>%
+  summarise(mean = mean(income),
+            sd = sd(income))
+
+#Test for significant differences across groups using one-way ANOVA 
+one.way <- aov(income ~ eth, data=framing)
+summary(one.way)
+
+##This is great approach for when you have 3+ experimental groups 
+pairwise.t.test(framing$income, framing$eth, p.adj = "bonf")
+
+#Can also do this with linear regression 
+lm_1<-lm(income ~ eth, data=framing)
+summary(lm_1)
+
+```
+
+When the dependent variable is continuous, we use statistical tests designed for that data type specifically including means, ANOVA, t-test, and linear regression. The above code chunk gives you the ability to conduct each analysis type for a balance test. When examining the output, you are looking for a signifant p-value (< .05). Because these are bivariate models, you will see the exact same p and f-values between the tests. These values do not show a significant effect indicating that income is evenly distributed across the experimental groups.  
+
+##Average Treatment Effect Analysis
+
+Now that we have conducted balance tests and feel confident that the randomization worked as expected, we can start to analyze the average treatment effect (ATE) of exposure to an immigration story about a Latino immigrant compared to an European one. 
+
+With randomized experimental data, the analysis is straightforward and simple. All we are looking for is significant differences between the experimental groups on whatever dependent variable of interest we are examining. We do not need control variables with a randomized experimental design. The only time we should include control variables is when we are doing moderating/mediating models (we will do that in a few weeks so for this code just focus on the ATE). 
+
+When our DV is continuous or ordinal (with 5+ scale points), we can calculate the ATE using any technique designed for a numerical DV. The same analyses we used for the balance tests with a continuous DV like age or income can be used here as well. 
+
+We should always have a written hypothesis for what we expect when we conduct an analysis. This ensures we are keeping our analysis focused on what we theoretically think matters as well as making it easier to interpret the results. 
+
+For the first analysis, we will once again be using the 'eth' variable for random treatment assignment and the 'cong_message' variable as our dependent variable. This DV is a measure of if the respondent wanted to send a message to their Congress member about immigration. The 'eth' variable is the randomized treatment group about either the Latino or European immigrant. 
+
+
+H1: White persons seeing an immigration story about a Latino immigrant will be more likely to send a negative message to Congress about immigration than after seeing a story about an European immigrant 
+
+To test this hypothesis, we need to calculate the average treatment effect for exposure to the Latino/European immigration story on desire to send Congress a message. 
+
+```{r}
+
+#Always start by examining your IV and DV 
+freq(framing$eth)
+freq(framing$cong_mesg)
+
+```
+
+The frequency distribution for the 'eth' variable shows a near perfect 50-50 split, which makes sense since this variable is randomly assigned. For the congressional message variable, we see that it takes on 2 values only with 1 = wanting to send a message. Around 1/3 of the entire sample wanted to send a message to Congress. 
+
+
+```{r}
+
+#Calculate the average desire to send message to Congress by experimental group 
+
+#Proportion wanting to send message by group 
+framing %>%
+  group_by(eth) %>%
+  summarise(mean = mean(cong_mesg),
+            sd = sd(cong_mesg))
+
+#Because both variables are dichotomous, we use crosstabs instead of ANOVAs
+CrossTable(framing$cong_mesg, framing$eth, expected = FALSE, chisq=TRUE,  prop.c=TRUE, prop.r=FALSE, prop.t=FALSE, prop.chisq = FALSE)
+
+#Can also do this with logistic regression 
+logit1 <- glm(cong_mesg ~ eth, data = framing, family = "binomial")
+summary(logit1)
+
+
+
+```
+
+Once again, we are looking for significant differences between experimental groups on desire to send Congress a message. Regardless of the analytic approach we take, there is no impact for seeing a story about a Latino or an European immigrant on desire to send Congress a message. We ultimately fail to reject the null hypothesis that there was no difference between groups. 
+
+
+Now let's look at an example with an ordinal DV, 'anx'.  Once again, we start by explicitly writing our hypothesis. 
+
+H2: White persons seeing an immigration story about a Latino immigrant report more anxiety about immigration than after seeing a story about an European immigrant 
+
+```{r}
+
+freq(framing$anx) #Always inspect your data before analysis
+
+
+```
+
+We see that 'anx' takes on 4 values so while technically we should use an ordered logit/probit model we will use a linear regression here for simplicity sake. In general, do not design your DV with 4 values. 
+
+
+```{r}
+
+#Get Average Treatment Effect by Experimental Group 
+framing %>% #Gets average anxiety levels by treatment group
+  group_by(eth2) %>%
+  summarise(mean = mean(anx),
+            sd = sd(anx), 
+            n=n())
+
+#Tests for significance differences between groups 
+framing %>% 
+  t_test(anx ~ eth2, var.equal=TRUE) %>%
+  add_significance()
+
+#Uses linear regression instead of a t-test 
+lm_1<-lm(anx ~ eth2, data=framing)
+summary(lm_1)
+
+#Uses ANOVA  instead of a t-test or linear regressoin 
+one.way <- aov(anx ~ eth2, data=framing)
+summary(one.way)
+
+#What if you want to graph the results?
+
+graph<-framing %>% #Same code as above but we add standard error calculation which allows us to easily construct confidence intervals around our point estimates 
+  group_by(eth2) %>%
+  summarise(mean = mean(anx),
+            sd = sd(anx), 
+            n=n(), 
+            se = sd / sqrt(n),
+            ub = mean+(1.96*se), 
+            lb = mean-(1.96*se))
+
+#Then we pipe in those values into ggplot along with information about the look and feel of our plot 
+ggplot(graph, aes(x=eth2, y=mean, fill=eth2)) + 
+  theme_classic(base_size = 20) + 
+  geom_bar(position=position_dodge(), stat="identity",
+           colour="black", # Use black outlines,
+           size=.3) +      # Thinner lines
+  geom_errorbar(aes(ymin=lb, ymax=ub),
+                size=.3,    # Thinner lines
+                width=.2,
+                position=position_dodge(.9))+
+  xlab("Immigrant Background") +
+  ylab("Anxiety About Immgiration") + 
+  ggtitle("") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_fill_manual(values=c("grey", "grey32")) +
+  coord_cartesian(ylim=c(4,5))  +
+     scale_y_continuous(breaks=seq(4, 5, 0.5)) +  # Ticks from 0-10, every .25
+   theme(legend.position = "none")  
+  #theme(legend.position = c(0.5, .9), legend.direction = "horizontal") 
+
+
+```
+
+Once again, we see that there is no significant effect for being randomly assigned to see a news story about a Latino or European immigrant. 
+
+However, we only analyzed one of the two concepts that were manipulated in the experiment. The second factor that was randomly assigned was if the tone of the news story was positive or negative. Now, it is your turn to analyze experimental data but using the 'tone' variable instead of the 'eth' variable. Open the second R file you just downloaded from our Week 6 Google Classroom file. 
+
+
+
